@@ -3819,7 +3819,7 @@ function renderPublicReviews(data) {
 
 /* ── Portfolio ────────────────────────────────────────────────────────────── */
 async function loadPortfolioFromDB() {
-    const data=await dbFetch(db.from('portfolio').select('*').order('sort_order').order('created_at',{ascending:false}));
+    const data=await dbFetch(db.from('portfolio').select('*').eq('hidden',false).order('sort_order').order('created_at',{ascending:false}));
     if(data.length>0) {
         const mapped=data.map(p=>({
             id:p.id, title:p.title, description:p.description||'',
@@ -3829,6 +3829,10 @@ async function loadPortfolioFromDB() {
         }));
         // Replace in-place so all references see the update (portfolioData is let but still global)
         portfolioData.splice(0, portfolioData.length, ...mapped);
+        if(typeof renderPortfolio==='function') renderPortfolio();
+    } else {
+        // No visible projects from DB — clear so only static fallback (if any) shows
+        portfolioData.splice(0, portfolioData.length);
         if(typeof renderPortfolio==='function') renderPortfolio();
     }
 }
@@ -4640,10 +4644,11 @@ async function loadAdminPortfolio(){
         return;
     }
     grid.innerHTML=projects.map(p=>`
-        <div class="admin-pf-card">
+        <div class="admin-pf-card" style="${p.hidden?'opacity:0.55':''}">
             <div class="admin-pf-thumb">
-                ${p.image?`<img src="${p.image}" alt="${p.title}" onerror="this.parentElement.innerHTML='<div class=admin-pf-thumb-placeholder>🖼️</div>'">`:`<div class="admin-pf-thumb-placeholder">🖼️</div>`}
+                ${p.image?`<img src="${p.image}" alt="${(p.title||'').replace(/"/g,'&quot;')}" onerror="this.parentElement.innerHTML='<div class=admin-pf-thumb-placeholder>🖼️</div>'">`:`<div class="admin-pf-thumb-placeholder">🖼️</div>`}
                 ${p.featured?`<span style="position:absolute;top:8px;right:8px;background:#f59e0b;color:white;padding:2px 8px;border-radius:6px;font-size:0.68rem;font-weight:700">⭐ Featured</span>`:''}
+                ${p.hidden?`<span style="position:absolute;top:8px;left:8px;background:#6b7280;color:white;padding:2px 8px;border-radius:6px;font-size:0.68rem;font-weight:700"><i class="fas fa-eye-slash"></i> Hidden</span>`:''}
             </div>
             <div class="admin-pf-body">
                 <h4>${p.title}</h4>
@@ -4651,7 +4656,10 @@ async function loadAdminPortfolio(){
                 <div style="margin-bottom:8px">${(typeof p.tags==='string'?p.tags.split(',').map(t=>t.trim()):(p.tags||[])).map(t=>`<span class="admin-pf-tag">${t}</span>`).join('')}</div>
                 <div class="admin-pf-actions">
                     <button class="edit-btn" onclick='openPfModal(${JSON.stringify(p)})'><i class="fas fa-edit"></i> Edit</button>
-                    <button class="del-btn" onclick="deletePfItem('${p.id}')"><i class="fas fa-trash"></i></button>
+                    <button class="del-btn" onclick="deletePfItem('${p.id}')" title="Delete permanently"><i class="fas fa-trash"></i></button>
+                    <button onclick="togglePfHidden('${p.id}',${!!p.hidden})" title="${p.hidden?'Show on site':'Hide from site'}" style="padding:5px 10px;border-radius:8px;border:1px solid var(--border);background:${p.hidden?'rgba(16,185,129,0.12)':'rgba(107,114,128,0.12)'};color:${p.hidden?'#10b981':'#9ca3af'};font-size:0.75rem;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+                        <i class="fas fa-${p.hidden?'eye':'eye-slash'}"></i> ${p.hidden?'Show':'Hide'}
+                    </button>
                     ${p.url?`<a href="${p.url}" target="_blank" style="padding:5px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text2);font-size:0.75rem;text-decoration:none;display:inline-flex;align-items:center;gap:4px"><i class="fas fa-external-link-alt"></i></a>`:''}
                 </div>
             </div>
@@ -4701,11 +4709,34 @@ async function savePortfolioItem(){
 }
 function showPfMsg(msg,type){const el=document.getElementById('pfMsg');el.textContent=msg;el.className=`auth-msg show ${type}`;}
 async function deletePfItem(id){
-    showConfirm('Delete this project permanently?',async()=>{
-        const {error}=await db.from('portfolio').delete().eq('id',id);
-        if(error){showToast('Error: '+error.message);return;}
+    showConfirm('Delete this project permanently? This cannot be undone.',async()=>{
+        const {error,data}=await db.from('portfolio').delete().eq('id',id).select();
+        if(error){showToast('❌ Error: '+error.message);return;}
+        if(!data||data.length===0){
+            // Delete silently blocked — almost always a missing RLS policy for admin DELETE
+            showToast('❌ Delete blocked by database permissions. Run the latest schema SQL (admin DELETE policy) in Supabase.');
+            return;
+        }
         showToast('✅ Project deleted.');loadAdminPortfolio();loadPortfolioFromDB();
     },{title:'Delete Project',danger:true});
+}
+async function togglePfHidden(id,currentlyHidden){
+    const newVal=!currentlyHidden;
+    const {error,data}=await db.from('portfolio').update({hidden:newVal}).eq('id',id).select();
+    if(error){
+        if(error.message && /column .*hidden.* does not exist/i.test(error.message)){
+            showToast('❌ Run the latest schema SQL first to add the "hidden" column to portfolio.');
+        } else {
+            showToast('❌ Error: '+error.message);
+        }
+        return;
+    }
+    if(!data||data.length===0){
+        showToast('❌ Update blocked by database permissions. Check admin UPDATE policy on portfolio table.');
+        return;
+    }
+    showToast(newVal?'👁️ Project hidden from site.':'✅ Project visible on site.');
+    loadAdminPortfolio();loadPortfolioFromDB();
 }
 
 /* ── Services CRUD ────────────────────────────────────────────────────────── */
